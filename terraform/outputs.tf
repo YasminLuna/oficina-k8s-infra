@@ -21,3 +21,7 @@ output "public_subnet_ids" {
 output "vpc_cidr" {
   value = module.vpc.vpc_cidr_block
 }
+
+output "node_security_group_id" {
+  value = module.eks.node_security_group_id
+}
