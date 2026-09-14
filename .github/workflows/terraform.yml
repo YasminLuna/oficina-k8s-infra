@@ -29,31 +29,81 @@ jobs:
         run: terraform validate -no-color
 
   deploy:
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.ENABLE_DEPLOY == 'true' && vars.TF_STATE_READY == 'true'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.ENABLE_DEPLOY == 'true' && vars.TF_STATE_READY == 'true' && vars.TF_STATE_BUCKET != ''
     needs: validate
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+    concurrency:
+      group: terraform-k8s-${{ github.ref_name }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.9.8'
+
       - name: Terraform init
         working-directory: terraform
         run: >-
           terraform init -input=false
           -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-          -backend-config="key=${{ vars.TF_STATE_KEY }}"
+          -backend-config="key=oficina-k8s-infra/${{ github.ref_name }}/terraform.tfstate"
           -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
           -backend-config="encrypt=true"
+
       - name: Terraform apply
         working-directory: terraform
         env:
           TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
           TF_VAR_environment: ${{ github.ref_name == 'main' && 'prod' || 'hml' }}
         run: terraform apply -auto-approve -input=false
+
+      - name: Publish infrastructure outputs
+        working-directory: terraform
+        run: |
+          echo "## Kubernetes infrastructure" >> "$GITHUB_STEP_SUMMARY"
+          echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> "$GITHUB_STEP_SUMMARY"
+          echo "VPC_ID=$(terraform output -raw vpc_id)" >> "$GITHUB_STEP_SUMMARY"
+          echo "VPC_CIDR=$(terraform output -raw vpc_cidr)" >> "$GITHUB_STEP_SUMMARY"
+          echo "PRIVATE_SUBNET_IDS=$(terraform output -json private_subnet_ids)" >> "$GITHUB_STEP_SUMMARY"
+          echo "PUBLIC_SUBNET_IDS=$(terraform output -json public_subnet_ids)" >> "$GITHUB_STEP_SUMMARY"
+          echo "NODE_SECURITY_GROUP_ID=$(terraform output -raw node_security_group_id)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure kubectl
+        working-directory: terraform
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ vars.AWS_REGION || 'us-east-1' }}"
+          kubectl get nodes
+
+      - name: Install metrics-server
+        run: |
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update
+          helm upgrade --install metrics-server metrics-server/metrics-server \
+            --namespace kube-system \
+            --set args[0]=--kubelet-preferred-address-types=InternalIP\,Hostname\,ExternalIP
+
+      - name: Install Datadog Agent when configured
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+        run: |
+          if [ -z "$DD_API_KEY" ]; then
+            echo "DD_API_KEY não configurada; Datadog será instalado após a chave ser adicionada." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          kubectl create namespace datadog --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n datadog create secret generic datadog-secret \
+            --from-literal=api-key="$DD_API_KEY" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          helm repo add datadog https://helm.datadoghq.com --force-update
+          helm upgrade --install datadog datadog/datadog \
+            --namespace datadog \
+            -f k8s/datadog-values.yaml
+          kubectl -n datadog rollout status daemonset/datadog --timeout=300s || true
