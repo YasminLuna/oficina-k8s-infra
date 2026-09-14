@@ -1,6 +1,7 @@
 datadog:
   apiKeyExistingSecret: datadog-secret
   site: datadoghq.com
+  clusterName: oficina-fase3
   logs:
     enabled: true
     containerCollectAll: true
@@ -8,5 +9,13 @@ datadog:
     portEnabled: true
   processAgent:
     enabled: true
+    processCollection: true
+  kubeStateMetricsCore:
+    enabled: true
+  orchestratorExplorer:
+    enabled: true
+
 clusterAgent:
   enabled: true
+  metricsProvider:
+    enabled: true
