@@ -1,0 +1,45 @@
+name: Bootstrap Terraform State
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      - name: Terraform init
+        working-directory: bootstrap-state
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        working-directory: bootstrap-state
+        run: terraform validate -no-color
+
+      - name: Terraform apply
+        working-directory: bootstrap-state
+        env:
+          TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        run: terraform apply -auto-approve -input=false
+
+      - name: Show state configuration
+        working-directory: bootstrap-state
+        run: |
+          echo "## Terraform remote state" >> "$GITHUB_STEP_SUMMARY"
+          echo "TF_STATE_BUCKET=$(terraform output -raw tf_state_bucket)" >> "$GITHUB_STEP_SUMMARY"
+          echo "TF_STATE_KEY=oficina-k8s-infra/hml/terraform.tfstate" >> "$GITHUB_STEP_SUMMARY"
+          echo "TF_STATE_READY=true" >> "$GITHUB_STEP_SUMMARY"
