@@ -6,6 +6,14 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+locals {
+  common_tags = {
+    Project     = "FIAP-Tech-Challenge-Fase3"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
@@ -22,13 +30,15 @@ module "vpc" {
   enable_dns_hostnames    = true
   enable_dns_support      = true
 
-  public_subnet_tags = {
+  public_subnet_tags = merge(local.common_tags, {
     "kubernetes.io/role/elb" = 1
-  }
+  })
 
-  private_subnet_tags = {
+  private_subnet_tags = merge(local.common_tags, {
     "kubernetes.io/role/internal-elb" = 1
-  }
+  })
+
+  tags = local.common_tags
 }
 
 module "eks" {
@@ -55,6 +65,9 @@ module "eks" {
       min_size       = 1
       max_size       = 2
       desired_size   = 1
+      tags           = local.common_tags
     }
   }
+
+  tags = local.common_tags
 }
