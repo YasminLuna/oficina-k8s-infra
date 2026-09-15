@@ -61,11 +61,11 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
-      # The account accepts t3.micro as a Free Tier worker type. Two workers
-      # are required because each t3.micro node exposes only four pod slots
-      # with the default EKS VPC CNI configuration.
+      # t3.micro is accepted by this account. Keep min_size at 1 so an
+      # existing one-node group can be updated safely; CI scales desired
+      # capacity to two workers after Terraform has raised max_size to 2.
       instance_types = ["t3.micro"]
-      min_size       = 2
+      min_size       = 1
       max_size       = 2
       desired_size   = 2
       tags           = local.common_tags
