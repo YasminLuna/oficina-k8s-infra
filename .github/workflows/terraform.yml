@@ -123,9 +123,11 @@ jobs:
         run: |
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ vars.AWS_REGION || 'us-east-1' }}"
-          kubectl get nodes
+          kubectl get nodes -o wide
 
       - name: Install metrics-server
+        id: metrics_server
+        continue-on-error: true
         run: |
           helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update
           helm upgrade --install metrics-server metrics-server/metrics-server \
@@ -133,7 +135,35 @@ jobs:
             --set-string 'args[0]=--kubelet-preferred-address-types=InternalIP\,Hostname\,ExternalIP'
           kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
 
+      - name: Diagnose metrics-server
+        if: steps.metrics_server.outcome == 'failure'
+        run: |
+          echo '=== metrics-server deployment ==='
+          kubectl -n kube-system get deployment metrics-server -o wide || true
+          echo '=== metrics-server pods ==='
+          kubectl -n kube-system get pods -l app.kubernetes.io/name=metrics-server -o wide || true
+          echo '=== describe deployment ==='
+          kubectl -n kube-system describe deployment metrics-server || true
+          echo '=== describe pods ==='
+          for pod in $(kubectl -n kube-system get pods -l app.kubernetes.io/name=metrics-server -o name 2>/dev/null); do
+            kubectl -n kube-system describe "$pod" || true
+          done
+          echo '=== container logs ==='
+          kubectl -n kube-system logs deployment/metrics-server --all-containers=true --tail=200 || true
+          echo '=== recent kube-system events ==='
+          kubectl -n kube-system get events --sort-by=.lastTimestamp | tail -n 100 || true
+          echo '=== node resources ==='
+          kubectl describe nodes || true
+          exit 1
+
+      - name: Verify metrics API
+        if: steps.metrics_server.outcome == 'success'
+        run: |
+          kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes
+          kubectl top nodes
+
       - name: Install Datadog Agent when configured
+        if: steps.metrics_server.outcome == 'success'
         env:
           DD_API_KEY: ${{ secrets.DD_API_KEY }}
         run: |
