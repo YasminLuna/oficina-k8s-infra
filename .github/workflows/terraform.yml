@@ -114,11 +114,14 @@ jobs:
           set -euo pipefail
           CLUSTER_NAME="oficina-hml"
           NODEGROUP=$(aws eks list-nodegroups --cluster-name "$CLUSTER_NAME" --query 'nodegroups[0]' --output text)
-          aws eks update-nodegroup-config \
-            --cluster-name "$CLUSTER_NAME" \
-            --nodegroup-name "$NODEGROUP" \
-            --scaling-config minSize=1,maxSize=2,desiredSize=2 >/dev/null
-          aws eks wait nodegroup-active --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP"
+          CURRENT_DESIRED=$(aws eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP" --query 'nodegroup.scalingConfig.desiredSize' --output text)
+          if [ "$CURRENT_DESIRED" != "2" ]; then
+            aws eks update-nodegroup-config \
+              --cluster-name "$CLUSTER_NAME" \
+              --nodegroup-name "$NODEGROUP" \
+              --scaling-config minSize=1,maxSize=2,desiredSize=2 >/dev/null
+            aws eks wait nodegroup-active --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP"
+          fi
 
       - name: Publish infrastructure outputs
         working-directory: terraform
@@ -143,11 +146,20 @@ jobs:
         id: metrics_server
         continue-on-error: true
         run: |
+          set -euo pipefail
           helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update
           helm upgrade --install metrics-server metrics-server/metrics-server \
             --namespace kube-system \
             --set-string 'args[0]=--kubelet-preferred-address-types=InternalIP\,Hostname\,ExternalIP'
+
+          # The deployment previously exhausted its progress deadline while the
+          # single t3.micro node had no pod slots. Restarting after the second
+          # node is Ready creates a fresh rollout instead of immediately failing
+          # on the stale ProgressDeadlineExceeded condition.
+          kubectl -n kube-system rollout restart deployment/metrics-server
           kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+          kubectl -n kube-system wait --for=condition=Ready pod \
+            -l app.kubernetes.io/name=metrics-server --timeout=180s
 
       - name: Diagnose metrics-server
         if: steps.metrics_server.outcome == 'failure'
