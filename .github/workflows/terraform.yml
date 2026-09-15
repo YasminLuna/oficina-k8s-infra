@@ -107,6 +107,19 @@ jobs:
           TF_VAR_environment: ${{ github.ref_name == 'main' && 'prod' || 'hml' }}
         run: terraform apply -auto-approve -input=false
 
+      - name: Scale HML node group to two workers
+        if: github.ref_name != 'main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLUSTER_NAME="oficina-hml"
+          NODEGROUP=$(aws eks list-nodegroups --cluster-name "$CLUSTER_NAME" --query 'nodegroups[0]' --output text)
+          aws eks update-nodegroup-config \
+            --cluster-name "$CLUSTER_NAME" \
+            --nodegroup-name "$NODEGROUP" \
+            --scaling-config minSize=1,maxSize=2,desiredSize=2 >/dev/null
+          aws eks wait nodegroup-active --cluster-name "$CLUSTER_NAME" --nodegroup-name "$NODEGROUP"
+
       - name: Publish infrastructure outputs
         working-directory: terraform
         run: |
@@ -123,6 +136,7 @@ jobs:
         run: |
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ vars.AWS_REGION || 'us-east-1' }}"
+          kubectl wait --for=condition=Ready nodes --all --timeout=180s
           kubectl get nodes -o wide
 
       - name: Install metrics-server
