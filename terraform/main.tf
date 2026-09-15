@@ -61,9 +61,11 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
-      instance_types = ["t3.medium"]
+      # t3.micro is eligible for this account's Free Tier and is sufficient
+      # for the academic HML demonstration with a single worker node.
+      instance_types = ["t3.micro"]
       min_size       = 1
-      max_size       = 2
+      max_size       = 1
       desired_size   = 1
       tags           = local.common_tags
     }
