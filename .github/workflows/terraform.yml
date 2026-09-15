@@ -45,15 +45,47 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Resolve Terraform state bucket
+      - name: Bootstrap Terraform state bucket
         shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
         run: |
           set -euo pipefail
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           TF_STATE_BUCKET="fiap-tech-challenge-tfstate-${ACCOUNT_ID}"
-          aws s3api head-bucket --bucket "$TF_STATE_BUCKET"
+
+          if aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
+            echo "Terraform state bucket already exists."
+          else
+            echo "Creating Terraform state bucket: $TF_STATE_BUCKET"
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$TF_STATE_BUCKET" --region "$AWS_REGION"
+            else
+              aws s3api create-bucket \
+                --bucket "$TF_STATE_BUCKET" \
+                --region "$AWS_REGION" \
+                --create-bucket-configuration LocationConstraint="$AWS_REGION"
+            fi
+          fi
+
+          aws s3api put-public-access-block \
+            --bucket "$TF_STATE_BUCKET" \
+            --public-access-block-configuration \
+            'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+
+          aws s3api put-bucket-versioning \
+            --bucket "$TF_STATE_BUCKET" \
+            --versioning-configuration Status=Enabled
+
+          aws s3api put-bucket-encryption \
+            --bucket "$TF_STATE_BUCKET" \
+            --server-side-encryption-configuration \
+            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
           echo "TF_STATE_BUCKET=$TF_STATE_BUCKET" >> "$GITHUB_ENV"
-          echo "Terraform state bucket: $TF_STATE_BUCKET" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Terraform State" >> "$GITHUB_STEP_SUMMARY"
+          echo "TF_STATE_BUCKET=$TF_STATE_BUCKET" >> "$GITHUB_STEP_SUMMARY"
+          echo "TF_STATE_READY=true" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: hashicorp/setup-terraform@v3
         with:
